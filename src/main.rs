@@ -3,6 +3,7 @@
 mod autostart;
 mod config;
 mod icon;
+mod settings;
 mod state;
 mod tray;
 mod win;
@@ -17,9 +18,9 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetMessageW,
-    HICON, KillTimer, MSG, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer,
-    TranslateMessage, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_TIMER, WNDCLASSEXW,
-    WS_EX_TOOLWINDOW,
+    HICON, IsDialogMessageW, KillTimer, MSG, PostQuitMessage, RegisterClassExW,
+    RegisterWindowMessageW, SetTimer, TranslateMessage, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
+    WM_LBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
 };
 
 use config::{ALL, Config};
@@ -64,6 +65,17 @@ fn apply(app: &App) {
             KillTimer(app.hwnd, TIMER_ID);
         }
     }
+}
+
+fn on_settings_save(new_cfg: Config) {
+    let _ = new_cfg.save();
+    autostart::set(new_cfg.autostart);
+    with_app(|app| {
+        app.config = new_cfg.clone();
+        app.state.set_keep_display(new_cfg.keep_display);
+        app.state.set_duration(new_cfg.duration, now_ms());
+        apply(app);
+    });
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -137,8 +149,14 @@ unsafe extern "system" fn wnd_proc(
                     apply(app);
                 });
             } else if id == tray::ID_SETTINGS {
-                // Task 5 sẽ nối vào
+                if let Some((owner, cfg)) = with_app(|app| (app.hwnd, app.config.clone())) {
+                    settings::open(owner, &cfg, on_settings_save);
+                }
             } else if id == tray::ID_EXIT {
+                let dlg = settings::hwnd();
+                if !dlg.is_null() {
+                    unsafe { DestroyWindow(dlg) };
+                }
                 unsafe { DestroyWindow(hwnd) };
             }
             0
@@ -212,7 +230,12 @@ fn main() {
         return;
     }
 
-    let config = Config::load();
+    let mut config = Config::load();
+    config.autostart = autostart::is_enabled();
+    if config.autostart {
+        autostart::set(true);
+    }
+
     let mut state = State::new(config.keep_display, config.duration);
     if config.activate_on_launch {
         state.activate(now_ms());
@@ -241,6 +264,10 @@ fn main() {
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     unsafe {
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            let dlg = settings::hwnd();
+            if !dlg.is_null() && IsDialogMessageW(dlg, &msg) != 0 {
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
