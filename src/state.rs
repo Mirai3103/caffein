@@ -4,6 +4,7 @@ pub const ES_CONTINUOUS: u32 = 0x8000_0000;
 pub const ES_SYSTEM_REQUIRED: u32 = 0x1;
 pub const ES_DISPLAY_REQUIRED: u32 = 0x2;
 
+#[derive(Clone, Copy)]
 pub struct State {
     pub active: bool,
     pub keep_display: bool,
@@ -51,6 +52,13 @@ impl State {
 
     pub fn set_keep_display(&mut self, v: bool) {
         self.keep_display = v;
+    }
+
+    pub fn apply_config(&mut self, keep_display: bool, duration: Duration, now_ms: u64) {
+        self.set_keep_display(keep_display);
+        if self.duration != duration {
+            self.set_duration(duration, now_ms);
+        }
     }
 
     pub fn tick(&mut self, now_ms: u64) -> bool {
@@ -147,5 +155,14 @@ mod tests {
         s.toggle(1);
         assert!(!s.active);
         assert_eq!(s.remaining_secs(1), None);
+    }
+
+    #[test]
+    fn save_unchanged_duration_preserves_countdown() {
+        let mut s = State::new(true, Duration::H2);
+        s.activate(0);
+        s.apply_config(false, Duration::H2, 6_600_000);
+        assert!(!s.keep_display);
+        assert_eq!(s.remaining_secs(6_600_000), Some(600));
     }
 }

@@ -17,6 +17,17 @@ fn scale(v: i32, size: i32) -> i32 {
     (v * size + 8) / 16
 }
 
+unsafe fn dib_pixels_mut<'a>(
+    bits_ptr: *mut core::ffi::c_void,
+    size: i32,
+) -> Option<&'a mut [u32]> {
+    if bits_ptr.is_null() || size <= 0 {
+        return None;
+    }
+    let count = (size as usize).checked_mul(size as usize)?;
+    Some(unsafe { std::slice::from_raw_parts_mut(bits_ptr.cast::<u32>(), count) })
+}
+
 pub fn make(active: bool) -> HICON {
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
     let bmi = BITMAPINFO {
@@ -52,8 +63,17 @@ pub fn make(active: bool) -> HICON {
         );
         ReleaseDC(null_mut(), screen_dc);
 
-        let count = (size as usize) * (size as usize);
-        let pixels = std::slice::from_raw_parts_mut(bits_ptr.cast::<u32>(), count);
+        let Some(pixels) = dib_pixels_mut(bits_ptr, size) else {
+            if !hbm_color.is_null() {
+                DeleteObject(hbm_color);
+            }
+            DeleteDC(mem_dc);
+            return null_mut();
+        };
+        if hbm_color.is_null() {
+            DeleteDC(mem_dc);
+            return null_mut();
+        }
         pixels.fill(SENTINEL);
 
         let old_bmp = SelectObject(mem_dc, hbm_color);
@@ -135,6 +155,10 @@ pub fn make(active: bool) -> HICON {
         let mask_stride = ((size as usize + 15) / 16) * 2;
         let mask_bytes = vec![0u8; mask_stride * (size as usize)];
         let hbm_mask = CreateBitmap(size, size, 1, 1, mask_bytes.as_ptr().cast());
+        if hbm_mask.is_null() {
+            DeleteObject(hbm_color);
+            return null_mut();
+        }
 
         let ii = ICONINFO {
             fIcon: 1,
@@ -149,5 +173,15 @@ pub fn make(active: bool) -> HICON {
         DeleteObject(hbm_color);
         let _ = null::<u8>();
         icon
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_bits_ptr_returns_none() {
+        assert!(unsafe { dib_pixels_mut(null_mut(), 16) }.is_none());
     }
 }

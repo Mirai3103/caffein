@@ -16,7 +16,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     RegisterClassExW, SPI_GETNONCLIENTMETRICS, SPI_GETWORKAREA, SW_RESTORE, SW_SHOW,
     SendMessageW, SetForegroundWindow, ShowWindow, SystemParametersInfoW, WM_CLOSE,
     WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DESTROY, WM_SETFONT, WNDCLASSEXW, WS_CAPTION,
-    WS_CHILD, WS_EX_DLGMODALFRAME, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WS_CHILD, WS_EX_APPWINDOW, WS_EX_DLGMODALFRAME, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::autostart;
@@ -45,6 +46,10 @@ thread_local! {
 
 pub fn hwnd() -> HWND {
     SETTINGS_HWND.with(|c| c.get())
+}
+
+fn dialog_ex_style() -> u32 {
+    WS_EX_DLGMODALFRAME | WS_EX_APPWINDOW
 }
 
 fn system_dpi() -> i32 {
@@ -401,7 +406,7 @@ pub fn open(owner: HWND, cfg: &Config, on_save: fn(Config)) {
     let client_w = scale_px(320, dpi);
     let client_h = scale_px(210, dpi);
     let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-    let ex_style = WS_EX_DLGMODALFRAME;
+    let ex_style = dialog_ex_style();
 
     let mut rc = RECT {
         left: 0,
@@ -455,5 +460,15 @@ pub fn open(owner: HWND, cfg: &Config, on_save: fn(Config)) {
     unsafe {
         ShowWindow(dlg, SW_SHOW);
         SetForegroundWindow(dlg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_dialog_has_appwindow_style() {
+        assert_ne!(dialog_ex_style() & WS_EX_APPWINDOW, 0);
     }
 }

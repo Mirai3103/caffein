@@ -17,10 +17,10 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, GetMessageW,
-    HICON, IsDialogMessageW, KillTimer, MSG, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SetTimer, TranslateMessage, WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY,
-    WM_LBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
+    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
+    DispatchMessageW, GetMessageW, HICON, IsDialogMessageW, KillTimer, MSG, MSGFLT_ALLOW,
+    PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer, TranslateMessage,
+    WM_COMMAND, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW,
 };
 
 use config::{ALL, Config};
@@ -72,10 +72,23 @@ fn on_settings_save(new_cfg: Config) {
     autostart::set(new_cfg.autostart);
     with_app(|app| {
         app.config = new_cfg.clone();
-        app.state.set_keep_display(new_cfg.keep_display);
-        app.state.set_duration(new_cfg.duration, now_ms());
+        app.state
+            .apply_config(new_cfg.keep_display, new_cfg.duration, now_ms());
         apply(app);
     });
+}
+
+fn allow_taskbar_broadcast(hwnd: HWND, msg: u32) -> bool {
+    if msg == 0 {
+        return false;
+    }
+    unsafe { ChangeWindowMessageFilterEx(hwnd, msg, MSGFLT_ALLOW, null_mut()) != 0 }
+}
+
+fn handle_context_menu(show: impl FnOnce(HWND, &State)) {
+    if let Some((hwnd, state)) = with_app(|app| (app.hwnd, app.state)) {
+        show(hwnd, &state);
+    }
 }
 
 unsafe extern "system" fn wnd_proc(
@@ -108,9 +121,7 @@ unsafe extern "system" fn wnd_proc(
                     apply(app);
                 });
             } else if event == WM_CONTEXTMENU {
-                with_app(|app| {
-                    tray::show_menu(app.hwnd, &app.state);
-                });
+                handle_context_menu(tray::show_menu);
             }
             0
         }
@@ -244,6 +255,7 @@ fn main() {
     let icons = [icon::make(false), icon::make(true)];
     let taskbar_msg_name = wide("TaskbarCreated");
     let wm_taskbar_created = unsafe { RegisterWindowMessageW(taskbar_msg_name.as_ptr()) };
+    allow_taskbar_broadcast(hwnd, wm_taskbar_created);
 
     APP.with(|cell| {
         *cell.borrow_mut() = Some(App {
@@ -272,5 +284,77 @@ fn main() {
             DispatchMessageW(&msg);
         }
         CloseHandle(mutex);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use config::Duration;
+
+    #[test]
+    fn context_menu_allows_reentrant_timer_without_borrow_panic() {
+        APP.with(|cell| {
+            *cell.borrow_mut() = Some(App {
+                hwnd: null_mut(),
+                state: State::new(true, Duration::M15),
+                config: Config::default(),
+                icons: [null_mut(), null_mut()],
+                wm_taskbar_created: 0,
+            });
+        });
+
+        handle_context_menu(|_, _| {
+            with_app(|app| {
+                let _ = app.state.tick(now_ms());
+            });
+        });
+
+        APP.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
+
+    #[test]
+    fn allows_taskbar_created_through_uipi() {
+        let hinstance = unsafe { GetModuleHandleW(null()) };
+        let cls = wide("CaffeinTestUipiClass");
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            style: 0,
+            lpfnWndProc: Some(DefWindowProcW),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinstance,
+            hIcon: null_mut(),
+            hCursor: null_mut(),
+            hbrBackground: null_mut(),
+            lpszMenuName: null(),
+            lpszClassName: cls.as_ptr(),
+            hIconSm: null_mut(),
+        };
+        unsafe { RegisterClassExW(&wc) };
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                cls.as_ptr(),
+                cls.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                null_mut(),
+                null_mut(),
+                hinstance,
+                null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        let msg_name = wide("TaskbarCreated");
+        let msg = unsafe { RegisterWindowMessageW(msg_name.as_ptr()) };
+        let ok = allow_taskbar_broadcast(hwnd, msg);
+        unsafe { DestroyWindow(hwnd) };
+        assert!(ok);
     }
 }
